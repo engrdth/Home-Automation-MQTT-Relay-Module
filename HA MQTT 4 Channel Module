@@ -1,0 +1,372 @@
+//Acknowledgement to PubSubClient found here: https://github.com/knolleary/pubsubclient
+// Updated by Reese Holford
+
+//Sketch used by a home automation demo board. See attachments for images.
+
+#include "myinfo.h"
+#include <PubSubClient.h>
+#include <ESP8266WiFi.h>
+#include <ArduinoOTA.h>
+#include <ArduinoJson.h>
+#include <ESP8266HTTPClient.h>
+#include <ESP8266httpUpdate.h>
+
+
+//Relay to NodeMCU Connection 
+
+//Relay to NodeMCU Connection
+#define LIGHT_PIN_1      14   //D5
+#define LIGHT_PIN_2      12   //D6
+#define LIGHT_PIN_3      13   //D7
+#define OUTLET_PIN_4      15   //D8 
+
+//NodeMCU to Push Button switch 
+#define LIGHT_BUTTON_1     5   //D1
+#define LIGHT_BUTTON_2     4   //D2
+#define LIGHT_BUTTON_3     0   //D3
+#define OUTLET_BUTTON_4     2   //D4 
+
+
+
+int light1State = LOW;
+int light2State = LOW;
+int light3State = LOW;
+int outletState = LOW;
+
+int lightButton1State = LOW;
+int lightButton2State = LOW;
+int lightButton3State = LOW;
+int outletButton4State = LOW;
+
+void callback(char * topic, byte * payload, unsigned int length);
+
+int BUILD_NUMBER = 0; 
+      
+WiFiClient wifiClient;
+PubSubClient client(mqtt_server, mqttPort, callback, wifiClient);
+
+void setup(){
+
+//Configure lights as an output and initialise to the off position.
+
+  pinMode(LIGHT_PIN_1, OUTPUT);                 // Light 1 on the Demo Board
+  pinMode(LIGHT_BUTTON_1, INPUT_PULLUP);
+  digitalWrite(LIGHT_PIN_1, HIGH);
+
+  pinMode(LIGHT_PIN_2, OUTPUT);                 // Light 2 on the Demo Board (Red Warnig Light)
+  pinMode(LIGHT_BUTTON_2, INPUT_PULLUP);
+  digitalWrite(LIGHT_PIN_2, HIGH);
+
+  pinMode(LIGHT_PIN_3, OUTPUT);                 // Light 3 on the Demo Board
+  pinMode(LIGHT_BUTTON_3, INPUT_PULLUP);
+  digitalWrite(LIGHT_PIN_3, HIGH);
+
+  pinMode(OUTLET_PIN_4, OUTPUT);                 // Outlet on the Demo Board
+  pinMode(OUTLET_BUTTON_4, INPUT_PULLUP);
+  digitalWrite(OUTLET_PIN_4, HIGH);
+
+  ArduinoOTA.setHostname(otaHostName);          // A name given to your ESP8266 module when discovering it as a port in ARDUINO IDE
+  ArduinoOTA.begin();                           // OTA initialization
+  
+  Serial.begin(115200);                         // Start the serial line for debugging
+  delay(100);
+
+  WiFi.begin(ssid, password);                   // Start wifi subsystem  
+  reconnectWifi();                              // Attempt to connect to the WIFI network and then connect to the MQTT server
+  delay(2000);                                  // Wait a bit before starting the main loop
+ 
+  
+}
+
+
+
+void loop(){
+
+  if (WiFi.status() != WL_CONNECTED) {          // Reconnect if connection is lost
+    reconnectWifi();
+  } else if (!client.connected()) {
+    reconnectMQTT();
+  } else {    
+    checkPhysicalButton(); 
+    client.loop();                              // Maintain MQTT connection   
+    delay(10);                                  // MUST delay to allow ESP8266 WIFI functions to run
+    ArduinoOTA.handle();
+  }
+  
+}
+
+/*******************
+Callback function
+********************/ 
+
+void callback(char * topic, byte * payload, unsigned int length) {
+  String topicStr = topic;                                // Convert topic to string to make it easier to work with
+  Serial.println("Callback update.");
+  Serial.println("Topic: ");
+  Serial.println(topicStr);                               // Note:  the "topic" value gets overwritten everytime it receives confirmation (callback) message from MQTT
+
+  if (topicStr == Light1CommandTopic) {    
+    if (payload[0] == '1') {                              // Turn the switch on if the payload is '1' and publish to the MQTT server a confirmation message
+      digitalWrite(LIGHT_PIN_1, LOW);
+      client.publish(Light1StateTopic, "1");
+    }    
+    else if (payload[0] == '0') {                         // Turn the switch off if the payload is '0' and publish to the MQTT server a confirmation message
+      digitalWrite(LIGHT_PIN_1, HIGH);
+      client.publish(Light1StateTopic, "0");
+    }
+  } else if (topicStr == Light2CommandTopic) {
+    if (payload[0] == '1') {                              // Turn the switch on if the payload is '1' and publish to the MQTT server a confirmation message
+      digitalWrite(LIGHT_PIN_2, LOW);
+      client.publish(Light2StateTopic, "1");
+    }
+    else if (payload[0] == '0') {                         // Turn the switch off if the payload is '0' and publish to the MQTT server a confirmation message
+      digitalWrite(LIGHT_PIN_2, HIGH);
+      client.publish(Light2StateTopic, "0");
+    }
+  } else if (topicStr == Light3CommandTopic) {
+    if (payload[0] == '1') {                              // Turn the switch on if the payload is '1' and publish to the MQTT server a confirmation message
+      digitalWrite(LIGHT_PIN_3, LOW);
+      client.publish(Light3StateTopic, "1");
+    }
+    else if (payload[0] == '0') {                         // Turn the switch off if the payload is '0' and publish to the MQTT server a confirmation message
+      digitalWrite(LIGHT_PIN_3, HIGH);
+      client.publish(Light3StateTopic, "0");
+    }
+  } else if (topicStr == OutletCommandTopic) {
+    if (payload[0] == '1') {                              // Turn the switch on if the payload is '1' and publish to the MQTT server a confirmation message
+      digitalWrite(OUTLET_PIN_4, LOW);
+      client.publish(OutletStateTopic, "1");
+    }
+    else if (payload[0] == '0') {                         // Turn the switch off if the payload is '0' and publish to the MQTT server a confirmation message
+      digitalWrite(OUTLET_PIN_4, HIGH);
+      client.publish(OutletStateTopic, "0");
+    }
+  } else if (topicStr == firmwareUpdateCommandTopic) {
+    Serial.println("Firmware update calling ");
+    if (payload[0] == '1') {                              // Turn the switch on if the payload is '1' and publish to the MQTT server a confirmation message
+      checkforupdate();
+    } else if (payload[0] == '0') {                       // Turn the switch off if the payload is '0' and publish to the MQTT server a confirmation message
+      Serial.println("Firmware switch off ");
+    }
+  }
+  publishData(BUILD_NUMBER);                              // Sending message to MQTT server to set build number in home assistant UI
+}
+
+
+/********************
+publish data function
+*********************/ 
+
+
+void publishData(int p_buildNumber) {                                 
+  StaticJsonDocument < 200 > jsonDocument;                            // create a JSON object  
+  jsonDocument["buildNumber"] = (String) p_buildNumber;               // INFO: the data must be converted into a string; a problem occurs when using floats...
+  char data[200];
+  serializeJson(jsonDocument, data);
+  client.publish(firmwareBuildNumberStateTopic, data, true);          //Publishing data to MQTT server as Json
+  yield();
+}
+
+
+/******************************
+check physical button function
+*******************************/ 
+
+void checkPhysicalButton() {
+  if (digitalRead(LIGHT_BUTTON_1) == 0) {
+    if (lightButton1State != LOW) {                        // LightButton1State is used to avoid sequential toggles
+      light1State = !light1State;                         // Toggle Relay state
+      digitalWrite(LIGHT_PIN_1, light1State);
+      if (light1State == LOW) {
+        client.publish(Light1StateTopic, "1");
+      } else {
+        client.publish(Light1StateTopic, "0");
+      }
+    }
+    lightButton1State = LOW;
+  } else {
+    lightButton1State = HIGH;
+  }
+
+  if (digitalRead(LIGHT_BUTTON_2) == 0) {    
+    if (lightButton2State != LOW) {                        // LightButton2State is used to avoid sequential toggles      
+      light2State = !light2State;                         // Toggle Relay state
+      digitalWrite(LIGHT_PIN_2, light2State);
+      if (light2State == LOW) {
+        client.publish(Light2StateTopic, "1");
+      } else {
+        client.publish(Light2StateTopic, "0");
+      }
+    }
+    lightButton2State = LOW;
+  } else {
+    lightButton2State = HIGH;
+  }
+
+  if (digitalRead(LIGHT_BUTTON_3) == 0) {    
+    if (lightButton3State != LOW) {                        // LightButton3State is used to avoid sequential toggles      
+      light3State = !light3State;                         // Toggle Relay state
+      digitalWrite(LIGHT_PIN_3, light3State);
+      if (light3State == LOW) {
+        client.publish(Light3StateTopic, "1");
+      } else {
+        client.publish(Light3StateTopic, "0");
+      }
+    }
+    lightButton3State = LOW;
+  } else {
+    lightButton3State = HIGH;
+  }
+
+  if (digitalRead(OUTLET_BUTTON_4) == 0) {    
+    if (outletButton4State != LOW) {                        // OutletButton4State is used to avoid sequential toggles      
+      outletState = !outletState;                         // Toggle Relay state
+      digitalWrite(OUTLET_PIN_4, outletState);
+      if (outletState == LOW) {
+        client.publish(OutletStateTopic, "1");
+      } else {
+        client.publish(OutletStateTopic, "0");
+      }
+    }
+    outletButton4State = LOW;
+  } else {
+    outletButton4State = HIGH;
+  }
+}
+
+/******************************
+reconect wifi function
+*******************************/ 
+
+void reconnectWifi() {
+  Serial.println("");
+  Serial.println("Wifi status = ");
+  Serial.println(WiFi.status());  
+  if (WiFi.status() != WL_CONNECTED) {                    // Attempt to connect to the wifi if connection is lost
+    Serial.println("Connecting to ");
+    Serial.println(ssid);
+        
+    while (WiFi.status() != WL_CONNECTED) {               // Loop while we wait for connection
+      checkPhysicalButton();
+      delay(500);
+    }
+
+    Serial.println("");
+    Serial.println("WiFi connected");
+    reconnectMQTT();
+    Serial.println("IP address: ");
+    Serial.println(WiFi.localIP());
+  }
+}
+
+
+/******************************
+reconect MQTT function
+*******************************/ 
+
+void reconnectMQTT() {
+  delay(1000);  
+  if (WiFi.status() == WL_CONNECTED) {                    // Make sure we are connected to WIFI before attemping to reconnect to MQTT    
+    while (!client.connected()) {                         // Loop until we're reconnected to the MQTT server
+      checkPhysicalButton();
+      Serial.println("Attempting MQTT connection...");      
+      String clientName;                                  // Generate client name based on MAC address and last 8 bits of microsecond counter
+      clientName += "esp8266-";
+      uint8_t mac[6];
+      WiFi.macAddress(mac);
+      clientName += macToStr(mac);      
+       
+      if (client.connect(mqttClientId, mqttUser, mqttPassword)) {         // Delete "mqtt_username", and "mqtt_password" here if you are not using any
+        Serial.println("\tMQTT Connected");
+        client.subscribe(Light1CommandTopic);                           // If connected, subscribe to the topic(s) we want to be notified about
+        client.subscribe(Light2CommandTopic);
+        client.subscribe(Light3CommandTopic);
+        client.subscribe(OutletCommandTopic);                         // Do not forget to replicate the above line if you will have more than the above number of relay switches
+        client.subscribe(firmwareUpdateCommandTopic);
+        client.publish(firmwareUpdateStateTopic, "0");                    // Sending message to MQTT server to turn off MQTT firmware upgrade button if its on
+        publishData(BUILD_NUMBER);                                        // Sending message to MQTT server to set build number in home assistant UI
+      }
+      else {
+        Serial.println("\tFailed.");
+        checkPhysicalButton();
+      }
+    }
+  } else {
+    Serial.println("Wifi is not connected");
+  }
+}
+
+
+
+/******************************
+Updates functions
+*******************************/ 
+
+
+void update_started() {
+  Serial.println("CALLBACK:  HTTP update process started");
+}
+
+void update_finished() {
+  Serial.println("CALLBACK:  HTTP update process finished");
+}
+
+void update_progress(int cur, int total) {
+  Serial.printf("CALLBACK:  HTTP update process at %d of %d bytes...\n", cur, total);
+}
+
+void update_error(int err) {
+  Serial.printf("CALLBACK:  HTTP update fatal error code %d\n", err);
+}
+
+void checkforupdate() {
+  Serial.println("OTA Update Request Received");
+  Serial.println("Firmware URL: ");
+  Serial.println(FIRMWARE_URL);
+
+  HTTPClient httpClient;
+  httpClient.begin(FIRMWARE_URL);
+  int httpCode = httpClient.GET();
+
+  if (httpCode == 200) {
+    Serial.println("Update file found, starting update");    
+//    ESPhttpUpdate.onStart(update_started);                             // Add optional callback notifiers if necessary
+//    ESPhttpUpdate.onEnd(update_finished);
+//    ESPhttpUpdate.onProgress(update_progress);
+//    ESPhttpUpdate.onError(update_error);
+    t_httpUpdate_return ret = ESPhttpUpdate.update(FIRMWARE_URL);
+
+    switch (ret) {
+    case HTTP_UPDATE_FAILED:
+      Serial.println("[update] Update failed.");
+      break;
+    case HTTP_UPDATE_NO_UPDATES:
+      Serial.println("[update] Update no Update.");
+      break;
+    case HTTP_UPDATE_OK:
+      Serial.println("[update] Update ok.");                            // May not called we reboot the ESP
+      break;
+    }
+  } else {
+    publishData(BUILD_NUMBER);
+   client.publish(firmwareUpdateStateTopic , "0");                     // Sending message to MQTT server to turn off MQTT firmware upgrade button if its on
+    Serial.println("Firmware check failed, got HTTP response code ");
+    Serial.println(httpCode);
+  }
+  httpClient.end();
+}
+
+String macToStr(const uint8_t * mac) {                                  // Generate unique name from MAC addr
+  String result;
+  for (int i = 0; i < 6; ++i) {
+    result += String(mac[i], 16);
+
+    if (i < 5) {
+      result += ':';
+    }
+  }
+  return result;
+}
+
+
+
